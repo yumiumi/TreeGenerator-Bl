@@ -2,131 +2,103 @@ import bpy
 import math
 import numpy as np
 import random
+import bmesh
 from dataclasses import dataclass, field
 
-def draw_line(start, end, col):
-    # create a new data block for a 3D curve (Z=0)
-    curve_data = bpy.data.curves.new('BranchCurve', type='CURVE')
-    curve_data.dimensions = '3D'
-
-    # add a line segment (polyline spline) with 2 points
-    polyline = curve_data.splines.new('POLY')
-    polyline.points.add(1) # Adds the second point (it starts with 1)
-
-    # the start vector coordinates (X, Y, Z=0.0, W=1.0)
-    polyline.points[0].co = (start[0], start[1], start[2], 1.0)
-
-    # the end vector coordinates (X, Y, Z=0.0, W=1.0)
-    polyline.points[1].co = (end[0], end[1], end[2], 1.0)
-
-    # link the newly made line into the visible 3D scene
-    obj = bpy.data.objects.new('branch', curve_data)
-    obj.color = (col[0], col[1], col[2], 1.0)
-    bpy.context.collection.objects.link(obj)
-
-# global variable, position of the whole tree or for root node
-START_POS = np.array([0,0,0]) 
+# position of the whole tree
+START_POS = np.array([0,0,0])
 max_length = 2
-# stop_cond is a condition when recursion should stop. Each iteration do generation++
-stop_cond = 8
+# condition when recursion should stop
+stop_cond = 6
 
 @dataclass
 class TreeNode:
-    elevation: float
-    azimuth: float
+    elevation: float # angle, how much a branch bends away from its parent
+    azimuth: float # angle, which direction the branch points
     length: float
     children: list['TreeNode'] = field(default_factory=list)
 
-    # recursion func
+    # logic
     def grow_tree(self, generation):
         if generation == stop_cond:
             return
         else:
-            new_elevation = random.randint(0, 30)
-            new_azimuth = random.randint(0, 359)
             new_length = max_length - (max_length * generation / 10)
-
-            self.children.append(TreeNode(new_elevation, new_azimuth + 360/2 * 0, new_length))
-            self.children.append(TreeNode(new_elevation, new_azimuth + 360/2 * 1, new_length))
+            children_num = random.randint(1, 3)
+            for child in range(children_num):
+                new_elevation = random.randint(10, 35)
+                base_azimuth = random.randint(0, 359)
+                new_azimuth = base_azimuth + 360/children_num * child + random.uniform(-20, 20)
+                self.children.append(TreeNode(new_elevation, new_azimuth, new_length * random.uniform(0.7, 1.3)))
+            
             for child in self.children:
                 child.grow_tree(generation + 1)
-
-'''
-def draw_tree2(node, pos):
-    x = node.length * math.sin(np.deg2rad(node.elevation)) * math.cos(np.deg2rad(node.azimuth))
-    y = node.length * math.sin(np.deg2rad(node.elevation)) * math.sin(np.deg2rad(node.azimuth))
-    z = node.length * math.cos(np.deg2rad(node.elevation))
-    anchor = pos + np.array([x, y, z])
-
-    #draw_line(pos, pos+(0, 0, 1), (1, 0, 0))
-    draw_line(pos, anchor, (0, 0, 0))
-
-    for child in node.children:
-        draw_tree2(child, anchor)
-'''
-
-def draw_tree(node, pos, parent_dir=np.array([0, 0, 1])):
+# tree drawing
+def draw_tree(node, pos, generation, bm, skin_layer, v_start=None, parent_dir=np.array([0, 0, 1])):
     parent_normal = parent_dir
-
+    # vector to find a perpendicular axis
     arbitrary = np.array([0, 0, 1])
+    # if parent_normal is nearly parallel to arbitrary, cross product would break
+    # so swap to a different arbitrary vector
     if abs(np.dot(parent_normal, arbitrary)) > 0.95:
         arbitrary = np.array([0, 1, 0])
-
+    # perpendicular axis to parent, used as rotation axis for elevation
     parent_perpendicular = np.cross(parent_normal, arbitrary)
     parent_perpendicular = parent_perpendicular / np.linalg.norm(parent_perpendicular)
+    child_normal = parent_normal
+    child_normal = rotate_by_axis(child_normal, parent_perpendicular, node.elevation)
+    child_normal = rotate_by_axis(child_normal, parent_normal, node.azimuth)
+    anchor = pos + child_normal * node.length
+    
+    # v_start is None only on the very first call (the root)
+    if v_start is None:
+        v_start = bm.verts.new(pos)
+        v_start[skin_layer].radius = (0.2, 0.2) # root thickness
+    
+    # end vertex of this branch
+    v_end = bm.verts.new(anchor)
+    radius = max(0.02, 0.2 - (0.2 * generation / stop_cond))
+    v_end[skin_layer].radius = (radius, radius)
 
-    our_normal = parent_normal
-    our_normal = rotate_by_axis(our_normal, parent_perpendicular, node.elevation)
-    our_normal = rotate_by_axis(our_normal, parent_normal, node.azimuth)
-
-    anchor = pos + our_normal * node.length
-    '''
-    x = node.length * math.sin(np.deg2rad(node.elevation)) * math.cos(np.deg2rad(node.azimuth))
-    y = node.length * math.sin(np.deg2rad(node.elevation)) * math.sin(np.deg2rad(node.azimuth))
-    z = node.length * math.cos(np.deg2rad(node.elevation))
-    anchor = pos + np.array([x, y, z])
-    '''
-
-    # create a new data block for a 3D curve (Z=0)
-    curve_data = bpy.data.curves.new('BranchCurve', type='CURVE')
-    curve_data.dimensions = '3D'
-
-    # add a line segment (polyline spline) with 2 points
-    polyline = curve_data.splines.new('POLY')
-    polyline.points.add(1) # Adds the second point (it starts with 1)
-
-    # the start vector coordinates (X, Y, Z=0.0, W=1.0)
-    polyline.points[0].co = (pos[0], pos[1], pos[2], 1.0)
-
-    # the end vector coordinates (X, Y, Z=0.0, W=1.0)
-    polyline.points[1].co = (anchor[0], anchor[1], anchor[2], 1.0)
-
-    # link the newly made line into the visible 3D scene
-    obj = bpy.data.objects.new('branch', curve_data)
-    bpy.context.collection.objects.link(obj)
+    # make an edge from start vertex to end vertex
+    bm.edges.new([v_start, v_end])
 
     for child in node.children:
-        draw_tree(child, anchor,our_normal)
+        draw_tree(child, anchor, generation + 1, bm, skin_layer, v_end, child_normal)        
 
 def rotate_by_axis(vec, axis_vec, ang):
     vector = np.array(vec)
     axis = np.array(axis_vec)
     angle = np.radians(ang)
-
-    # normalize the axis
     axis = axis / np.linalg.norm(axis)
-
     rotated = (
         vector * np.cos(angle) + np.cross(axis, vector) * np.sin(angle) + axis * np.dot(axis, vector) * (1 - np.cos(angle))
     )
-
     return rotated
 
-# delete previously generated curves
+# delete previously generated meshes
 bpy.ops.object.select_all(action='DESELECT')
-bpy.ops.object.select_by_type(type='CURVE')
+bpy.ops.object.select_by_type(type='MESH')
 bpy.ops.object.delete()
 
 root = TreeNode(0, 0, max_length)
 root.grow_tree(0)
-draw_tree(root, START_POS)
+
+tree_mesh = bpy.data.meshes.new('Tree_mesh')  # add a new mesh
+bm = bmesh.new() # make a new BMesh (draft) 
+
+tree_obj = bpy.data.objects.new('Tree_object', tree_mesh)  # add a new object using the mesh
+bpy.context.collection.objects.link(tree_obj)
+
+# select and make active
+bpy.context.view_layer.objects.active = tree_obj
+tree_obj.select_set(True)
+
+skin_layer = bm.verts.layers.skin.verify()
+draw_tree(root, START_POS, 0, bm, skin_layer)
+
+bm.to_mesh(tree_mesh) # put draft into tree_mesh mesh 
+bm.free() # delete draft
+tree_mesh.update()
+tree_mesh.skin_vertices[0].data[0].use_root = True
+bpy.ops.object.modifier_add(type='SKIN')
